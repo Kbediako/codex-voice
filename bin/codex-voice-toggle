@@ -1,0 +1,8 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+if pgrep -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1; then
+  /data/data/com.termux/files/home/bin/codex-voice-off
+else
+  /data/data/com.termux/files/home/bin/codex-voice-on
+  /data/data/com.termux/files/home/bin/codex-voice-control
+fi

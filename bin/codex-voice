@@ -21,7 +21,7 @@ AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
-RECORD_SECS=3
+RECORD_SECS=4
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
 
@@ -110,13 +110,13 @@ listen_once() {
       echo ""
       return
     fi
-    ffmpeg -y -i "$AUDIO_OPUS" -ar 16000 -ac 1 -f wav "$AUDIO_WAV" >/dev/null 2>>"$LOG_FILE"
+    ffmpeg -loglevel error -y -i "$AUDIO_OPUS" -ar 16000 -ac 1 -f wav "$AUDIO_WAV" >/dev/null 2>>"$LOG_FILE"
     if [ ! -s "$AUDIO_WAV" ]; then
       log "ffmpeg failed"
       echo ""
       return
     fi
-    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en >/dev/null 2>>"$LOG_FILE"
+    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en --vad -vt 0.6 -vsd 200 -vspd 400 >/dev/null 2>>"$LOG_FILE"
     status=$?
     if [ "$status" -ne 0 ]; then
       log "whisper exit $status"
@@ -141,6 +141,17 @@ normalize_text() {
   printf '%s' "$1" \
     | tr '[:upper:]' '[:lower:]' \
     | sed -E 's/[^a-z0-9 ]+/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+is_garbage_transcript() {
+  case "$1" in
+    ""|"blank audio"|"dramatic music"|"music"|"silence"|"background noise"|"noise")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 contains_wake() {
@@ -219,6 +230,10 @@ while :; do
   fi
 
   norm=$(normalize_text "$text")
+  if is_garbage_transcript "$norm"; then
+    continue
+  fi
+
   log "Heard: $norm"
 
   if [ "$armed" -eq 1 ]; then
@@ -278,7 +293,7 @@ while :; do
     wake_buffer=""
     wake_ts=0
 
-    if [ -z "$cmd" ]; then
+    if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
       notify "Listening..."
       speak "Listening."
       termux-vibrate -d 80 >/dev/null 2>&1 || true
@@ -287,7 +302,7 @@ while :; do
       cmd=$(normalize_text "$cmd")
     fi
 
-    if [ -z "$cmd" ]; then
+    if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
       armed=1
       notify "Listening for '$WAKE_PHRASE'"
       continue
