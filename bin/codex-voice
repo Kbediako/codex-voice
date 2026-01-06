@@ -27,9 +27,9 @@ AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
 RECORD_SECS=4
 MIN_OPUS_BYTES=2000
-RECORD_SECS_WAKE=3
+RECORD_SECS_WAKE=5
 RECORD_SECS_CMD=6
-MIN_OPUS_BYTES_WAKE=1200
+MIN_OPUS_BYTES_WAKE=600
 MIN_OPUS_BYTES_CMD=2200
 MAX_COMMAND_RETRIES=1
 LOCK_DIR="$VOICE_DIR/voice.lock"
@@ -264,29 +264,15 @@ is_garbage_transcript() {
 }
 
 contains_wake() {
-  has_codex=0
   case " $1 " in
-    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) has_codex=1 ;;
+    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) return 0 ;;
   esac
-
-  if [ "$has_codex" -eq 0 ]; then
-    return 1
-  fi
-
-  case " $1 " in
-    *" yo "*|*" hey "*|*" hi "*|*" ok "*|*" okay "*) return 0 ;;
-  esac
-
-  case "$1" in
-    "codex"|"codec"|"code x"|"codexx") return 0 ;;
-  esac
-
   return 1
 }
 
 strip_wake() {
   printf '%s' "$1" \
-    | sed -E 's/.*(yo|hey|hi|ok|okay) codex ?//; s/.*(yo|hey|hi|ok|okay) codec ?//; s/.*(yo|hey|hi|ok|okay) code x ?//; s/.*(yo|hey|hi|ok|okay) codexx ?//; s/^codex ?//; s/^codec ?//; s/^code x ?//; s/^codexx ?//'
+    | sed -E 's/.*(yo|hey|hi|ok|okay) codex ?//; s/.*(yo|hey|hi|ok|okay) codec ?//; s/.*(yo|hey|hi|ok|okay) code x ?//; s/.*(yo|hey|hi|ok|okay) codexx ?//; s/.*codex ?//; s/.*codec ?//; s/.*code x ?//; s/.*codexx ?//'
 }
 
 speak() {
@@ -400,6 +386,7 @@ while :; do
 
     if ! contains_wake "$wake_buffer"; then
       notify "Heard speech (waiting for '$WAKE_PHRASE')"
+      termux-toast "Heard speech" >/dev/null 2>&1 || true
       continue
     fi
 
