@@ -8,9 +8,11 @@ WAKE_PHRASE="yo codex"
 NOTIF_ID=9101
 NOTIF_TITLE="Codex Voice"
 TTS_STREAM="MUSIC"
+SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-0}"
 LOG_FILE="$VOICE_DIR/voice_debug.log"
 WAKE_WINDOW_SECS=6
 armed=0
+armed_at=0
 wake_buffer=""
 wake_ts=0
 HEARTBEAT_SECS=30
@@ -27,6 +29,11 @@ AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
 RECORD_SECS=4
 MIN_OPUS_BYTES=2000
+RECORD_SECS_WAKE=3
+RECORD_SECS_CMD=6
+MIN_OPUS_BYTES_WAKE=1200
+MIN_OPUS_BYTES_CMD=2200
+ARM_TIMEOUT_SECS=12
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
 has_lock=0
@@ -79,7 +86,7 @@ resolve_model_override() {
 }
 
 select_whisper_model_wake() {
-  candidates="ggml-tiny.en.bin ggml-base.en.bin ggml-small.en.bin ggml-medium.en.bin ggml-large-v3.bin ggml-large.bin"
+  candidates="ggml-base.en.bin ggml-small.en.bin ggml-tiny.en.bin ggml-medium.en.bin ggml-large-v3.bin ggml-large.bin"
   for model in $candidates; do
     if [ -f "$WHISPER_MODEL_DIR/$model" ]; then
       printf '%s' "$WHISPER_MODEL_DIR/$model"
@@ -187,11 +194,19 @@ wait_for_recording_stop() {
 
 listen_once() {
   model="$1"
+  record_secs="$2"
+  min_bytes="$3"
+  if [ -z "$record_secs" ]; then
+    record_secs="$RECORD_SECS"
+  fi
+  if [ -z "$min_bytes" ]; then
+    min_bytes="$MIN_OPUS_BYTES"
+  fi
   if [ -x "$WHISPER_BIN" ] && [ -n "$model" ] && [ -f "$model" ]; then
     termux-microphone-record -q >/dev/null 2>&1 || true
     rm -f "$AUDIO_OPUS" "$AUDIO_WAV" "${TRANSCRIPT_BASE}.txt"
-    termux-microphone-record -f "$AUDIO_OPUS" -l "$RECORD_SECS" -e opus >/dev/null 2>&1 || true
-    sleep "$RECORD_SECS"
+    termux-microphone-record -f "$AUDIO_OPUS" -l "$record_secs" -e opus >/dev/null 2>&1 || true
+    sleep "$record_secs"
     termux-microphone-record -q >/dev/null 2>&1 || true
     wait_for_recording_stop
     sleep 0.6
@@ -201,7 +216,7 @@ listen_once() {
       return
     fi
     opus_bytes=$(wc -c < "$AUDIO_OPUS" | tr -d ' ')
-    if [ "$opus_bytes" -lt "$MIN_OPUS_BYTES" ]; then
+    if [ "$opus_bytes" -lt "$min_bytes" ]; then
       log "audio too small (${opus_bytes} bytes)"
       echo ""
       return
@@ -241,7 +256,7 @@ normalize_text() {
 
 is_garbage_transcript() {
   case "$1" in
-    ""|"blank audio"|"dramatic music"|"music"|"silence"|"background noise"|"noise")
+    ""|"blank audio"|"dramatic music"|"music"|"music playing"|"background music"|"footsteps"|"water splashing"|"silence"|"background noise"|"noise")
       return 0
       ;;
     *)
@@ -251,20 +266,29 @@ is_garbage_transcript() {
 }
 
 contains_wake() {
+  has_codex=0
   case " $1 " in
-    *" yo "*) ;;
-    *) return 1 ;;
+    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) has_codex=1 ;;
   esac
 
+  if [ "$has_codex" -eq 0 ]; then
+    return 1
+  fi
+
   case " $1 " in
-    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) return 0 ;;
-    *) return 1 ;;
+    *" yo "*|*" hey "*|*" hi "*|*" ok "*|*" okay "*) return 0 ;;
   esac
+
+  case "$1" in
+    "codex"|"codec"|"code x"|"codexx") return 0 ;;
+  esac
+
+  return 1
 }
 
 strip_wake() {
   printf '%s' "$1" \
-    | sed -E 's/.*yo codex ?//; s/.*yo codec ?//; s/.*yo code x ?//; s/.*yo codexx ?//'
+    | sed -E 's/.*(yo|hey|hi|ok|okay) codex ?//; s/.*(yo|hey|hi|ok|okay) codec ?//; s/.*(yo|hey|hi|ok|okay) code x ?//; s/.*(yo|hey|hi|ok|okay) codexx ?//; s/^codex ?//; s/^codec ?//; s/^code x ?//; s/^codexx ?//'
 }
 
 speak() {
@@ -326,7 +350,7 @@ printf '%s\n' "Hands-free mode ready. Say '$WAKE_PHRASE' to wake. Say 'stop list
 while :; do
   now=$(date +%s)
   if [ $((now - last_heartbeat)) -ge "$HEARTBEAT_SECS" ]; then
-    if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
+    if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL_CMD" ] && [ -f "$WHISPER_MODEL_CMD" ]; then
       notify "Listening (offline) for '$WAKE_PHRASE'"
     else
       notify "Listening for '$WAKE_PHRASE'"
@@ -334,12 +358,18 @@ while :; do
     last_heartbeat=$now
   fi
 
+  if [ "$armed" -eq 1 ] && [ "$armed_at" -gt 0 ] && [ $((now - armed_at)) -gt "$ARM_TIMEOUT_SECS" ]; then
+    armed=0
+    armed_at=0
+    notify "Listening for '$WAKE_PHRASE'"
+  fi
+
   if [ "$armed" -eq 1 ]; then
     notify "Listening..."
     termux-vibrate -d 80 >/dev/null 2>&1 || true
-    text=$(listen_once "$WHISPER_MODEL_CMD")
+    text=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
   else
-    text=$(listen_once "$WHISPER_MODEL_WAKE")
+    text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE")
   fi
   text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
@@ -359,6 +389,7 @@ while :; do
     if [ -n "$norm" ]; then
       cmd="$norm"
       armed=0
+      armed_at=0
       wake_buffer=""
       wake_ts=0
       notify "Thinking..."
@@ -414,16 +445,22 @@ while :; do
 
     if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
       notify "Listening..."
-      speak "Listening."
+      termux-toast "Listening..." >/dev/null 2>&1 || true
+      if [ "$SAY_LISTENING" = "1" ]; then
+        speak "Listening."
+      fi
       termux-vibrate -d 80 >/dev/null 2>&1 || true
       sleep 0.3
-      cmd=$(listen_once)
+      cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
       cmd=$(normalize_text "$cmd")
     fi
 
     if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
       armed=1
-      notify "Listening for '$WAKE_PHRASE'"
+      armed_at=$now
+      notify "Say your command..."
+      termux-toast "Say your command..." >/dev/null 2>&1 || true
+      speak "I didn't catch that. Say it again."
       continue
     fi
 
