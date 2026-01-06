@@ -1,0 +1,12 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+NOTIF_ID=9102
+
+termux-notification -i "$NOTIF_ID" --ongoing \
+  -t "Codex Voice Control" \
+  -c "Start/Stop the hands-free listener" \
+  --alert-once \
+  --button1 "Start" --button1-action "/data/data/com.termux/files/home/bin/codex-voice-on" \
+  --button2 "Stop" --button2-action "/data/data/com.termux/files/home/bin/codex-voice-off" \
+  --button3 "Status" --button3-action "/data/data/com.termux/files/home/bin/codex-voice-status" \
+  >/dev/null 2>&1

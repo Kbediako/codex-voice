@@ -1,0 +1,31 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+VOICE_DIR="$HOME/.codex/device"
+PID_FILE="$VOICE_DIR/voice.pid"
+LOG_FILE="$VOICE_DIR/voice.log"
+NOTIF_VOICE_ID=9101
+NOTIF_CTRL_ID=9102
+
+mkdir -p "$VOICE_DIR"
+
+termux-notification-remove -i "$NOTIF_VOICE_ID" >/dev/null 2>&1 || true
+termux-notification-remove -i "$NOTIF_CTRL_ID" >/dev/null 2>&1 || true
+
+if pgrep -f "/codex-voice" >/dev/null 2>&1; then
+  termux-toast "Codex voice already running" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+if [ -f "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    termux-toast "Codex voice already running (pid $pid)" >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+
+nohup setsid "$HOME/bin/codex-voice" >"$LOG_FILE" 2>&1 </dev/null &
+new_pid=$!
+
+echo "$new_pid" > "$PID_FILE"
+termux-toast "Codex voice started" >/dev/null 2>&1 || true

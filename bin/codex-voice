@@ -1,0 +1,325 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+VOICE_DIR="$HOME/.codex/device"
+SESSION_FILE="$VOICE_DIR/voice_session_id"
+OUT_FILE="$VOICE_DIR/voice_last_message.txt"
+MAX_TTS_CHARS=800
+WAKE_PHRASE="yo codex"
+NOTIF_ID=9101
+NOTIF_TITLE="Codex Voice"
+TTS_STREAM="MUSIC"
+LOG_FILE="$VOICE_DIR/voice_debug.log"
+WAKE_WINDOW_SECS=6
+armed=0
+wake_buffer=""
+wake_ts=0
+HEARTBEAT_SECS=30
+last_heartbeat=0
+WHISPER_BIN="$HOME/bin/whisper-cpp"
+WHISPER_MODEL="$VOICE_DIR/models/ggml-tiny.en.bin"
+AUDIO_DIR="$VOICE_DIR/audio"
+AUDIO_OPUS="$AUDIO_DIR/input.opus"
+AUDIO_WAV="$AUDIO_DIR/input.wav"
+TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
+RECORD_SECS=3
+LOCK_DIR="$VOICE_DIR/voice.lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
+
+mkdir -p "$VOICE_DIR" "$AUDIO_DIR"
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+notify() {
+  termux-notification -i "$NOTIF_ID" --ongoing \
+    -t "$NOTIF_TITLE" -c "$1" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  notify "Stopped"
+  termux-notification-remove -i "$NOTIF_ID" >/dev/null 2>&1 || true
+  termux-wake-unlock >/dev/null 2>&1 || true
+  rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
+  log "Stopped"
+}
+
+trap cleanup INT TERM EXIT
+
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$LOCK_PID_FILE"
+    return 0
+  fi
+
+  if [ -f "$LOCK_PID_FILE" ]; then
+    lock_pid=$(cat "$LOCK_PID_FILE" 2>/dev/null)
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+      log "Another instance already running (pid $lock_pid)"
+      exit 0
+    fi
+  fi
+
+  rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$LOCK_PID_FILE"
+  fi
+}
+
+latest_session_file() {
+  ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -n 1
+}
+
+extract_session_id() {
+  echo "$1" | sed -E 's/.*-([0-9a-f-]{36})\.jsonl$/\1/'
+}
+
+init_session() {
+  if [ -f "$SESSION_FILE" ]; then
+    session_id=$(cat "$SESSION_FILE" 2>/dev/null)
+    if [ -n "$session_id" ]; then
+      echo "$session_id"
+      return
+    fi
+  fi
+
+  # Create a dedicated voice session if we don't have one yet.
+  codex exec --skip-git-repo-check --color never \
+    --output-last-message "$OUT_FILE" \
+    "You are my hands-free voice assistant. Keep replies concise unless I ask for detail." \
+    >/dev/null 2>&1 || true
+
+  session_file=$(latest_session_file)
+  session_id=$(extract_session_id "$session_file")
+  if [ -n "$session_id" ]; then
+    echo "$session_id" > "$SESSION_FILE"
+    echo "$session_id"
+  else
+    echo ""
+  fi
+}
+
+listen_once() {
+  if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
+    termux-microphone-record -q >/dev/null 2>&1 || true
+    rm -f "$AUDIO_OPUS" "$AUDIO_WAV" "${TRANSCRIPT_BASE}.txt"
+    termux-microphone-record -f "$AUDIO_OPUS" -l "$RECORD_SECS" -e opus >/dev/null 2>&1 || true
+    sleep $((RECORD_SECS + 1))
+    if [ ! -s "$AUDIO_OPUS" ]; then
+      log "no audio captured"
+      echo ""
+      return
+    fi
+    ffmpeg -y -i "$AUDIO_OPUS" -ar 16000 -ac 1 -f wav "$AUDIO_WAV" >/dev/null 2>>"$LOG_FILE"
+    if [ ! -s "$AUDIO_WAV" ]; then
+      log "ffmpeg failed"
+      echo ""
+      return
+    fi
+    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en >/dev/null 2>>"$LOG_FILE"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      log "whisper exit $status"
+    fi
+    if [ -s "${TRANSCRIPT_BASE}.txt" ]; then
+      cat "${TRANSCRIPT_BASE}.txt"
+    else
+      echo ""
+    fi
+  else
+    # termux-speech-to-text streams partial matches; take the last non-empty line.
+    out=$(termux-speech-to-text 2>>"$LOG_FILE")
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      log "speech-to-text exit $status"
+    fi
+    printf '%s' "$out" | awk 'NF{last=$0} END{print last}'
+  fi
+}
+
+normalize_text() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9 ]+/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+contains_wake() {
+  case " $1 " in
+    *" yo "*) ;;
+    *) return 1 ;;
+  esac
+
+  case " $1 " in
+    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+strip_wake() {
+  printf '%s' "$1" \
+    | sed -E 's/.*yo codex ?//; s/.*yo codec ?//; s/.*yo code x ?//; s/.*yo codexx ?//'
+}
+
+speak() {
+  # Use notification stream by default; adjust with termux-tts-speak flags if desired.
+  termux-tts-speak -s "$TTS_STREAM" "$1"
+}
+
+say_response() {
+  if [ ! -s "$OUT_FILE" ]; then
+    speak "I didn't get a response."
+    return
+  fi
+
+  resp=$(cat "$OUT_FILE")
+  resp_len=$(printf '%s' "$resp" | wc -c | tr -d ' ')
+  if [ "$resp_len" -gt "$MAX_TTS_CHARS" ]; then
+    short_resp=$(printf '%s' "$resp" | head -c "$MAX_TTS_CHARS")
+    speak "$short_resp"
+    speak "Response truncated. Check the terminal for full text."
+    printf '%s\n' "$resp"
+  else
+    speak "$resp"
+    printf '%s\n' "$resp"
+  fi
+}
+
+acquire_lock
+session_id=$(init_session)
+
+termux-wake-lock >/dev/null 2>&1 || true
+if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
+  notify "Listening (offline) for '$WAKE_PHRASE'"
+  log "Started (whisper offline)"
+  speak "Codex voice is live offline."
+else
+  notify "Listening for '$WAKE_PHRASE'"
+  log "Started (termux speech)"
+  speak "Codex voice is live."
+fi
+printf '%s\n' "Hands-free mode ready. Say '$WAKE_PHRASE' to wake. Say 'stop listening' to exit."
+
+while :; do
+  now=$(date +%s)
+  if [ $((now - last_heartbeat)) -ge "$HEARTBEAT_SECS" ]; then
+    if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
+      notify "Listening (offline) for '$WAKE_PHRASE'"
+    else
+      notify "Listening for '$WAKE_PHRASE'"
+    fi
+    last_heartbeat=$now
+  fi
+
+  text=$(listen_once)
+  text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+  if [ -z "$text" ]; then
+    sleep 0.3
+    continue
+  fi
+
+  norm=$(normalize_text "$text")
+  log "Heard: $norm"
+
+  if [ "$armed" -eq 1 ]; then
+    if [ -n "$norm" ]; then
+      cmd="$norm"
+      armed=0
+      wake_buffer=""
+      wake_ts=0
+      notify "Thinking..."
+      log "Command (armed): $cmd"
+      goto_handle=1
+    else
+      continue
+    fi
+  else
+    goto_handle=0
+  fi
+
+  case "$norm" in
+    "stop"|"stop listening"|"quit"|"exit")
+      speak "Stopping voice mode."
+      exit 0
+      ;;
+  esac
+
+  if [ "$goto_handle" -eq 0 ]; then
+    now=$(date +%s)
+    if [ "$wake_ts" -eq 0 ] || [ $((now - wake_ts)) -gt "$WAKE_WINDOW_SECS" ]; then
+      wake_buffer=""
+    fi
+    wake_ts=$now
+
+    if [ -n "$wake_buffer" ]; then
+      wake_buffer="$wake_buffer $norm"
+    else
+      wake_buffer="$norm"
+    fi
+
+    wake_buffer=$(printf '%s' "$wake_buffer" | awk -v n=12 '{
+      if (NF>n) {for (i=NF-n+1;i<=NF;i++) printf "%s%s", $i, (i==NF?ORS:OFS)}
+      else print
+    }')
+
+    if ! contains_wake "$wake_buffer"; then
+      notify "Heard speech (waiting for '$WAKE_PHRASE')"
+      continue
+    fi
+
+    notify "Heard wake word"
+    termux-vibrate -d 80 >/dev/null 2>&1 || true
+
+    cmd=$(strip_wake "$wake_buffer")
+    if [ "$cmd" = "$wake_buffer" ]; then
+      cmd=""
+    fi
+    cmd=$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    wake_buffer=""
+    wake_ts=0
+
+    if [ -z "$cmd" ]; then
+      notify "Listening..."
+      speak "Listening."
+      termux-vibrate -d 80 >/dev/null 2>&1 || true
+      sleep 0.3
+      cmd=$(listen_once)
+      cmd=$(normalize_text "$cmd")
+    fi
+
+    if [ -z "$cmd" ]; then
+      armed=1
+      notify "Listening for '$WAKE_PHRASE'"
+      continue
+    fi
+
+    case "$cmd" in
+      "stop"|"stop listening"|"quit"|"exit")
+        speak "Stopping voice mode."
+        exit 0
+        ;;
+    esac
+  fi
+
+  notify "Thinking..."
+  if [ -n "$session_id" ]; then
+    codex exec --skip-git-repo-check --color never \
+      --output-last-message "$OUT_FILE" \
+      resume "$session_id" "$cmd" >/dev/null 2>&1
+    status=$?
+  else
+    status=1
+  fi
+
+  if [ "$status" -ne 0 ]; then
+    # Fallback: run a fresh one-shot if resume fails.
+    codex exec --skip-git-repo-check --color never \
+      --output-last-message "$OUT_FILE" \
+      "$cmd" >/dev/null 2>&1
+  fi
+
+  notify "Speaking..."
+  say_response
+  notify "Listening for '$WAKE_PHRASE'"
+
+done

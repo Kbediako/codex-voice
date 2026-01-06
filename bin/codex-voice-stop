@@ -1,0 +1,22 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+HOME_DIR="$HOME"
+VOICE_DIR="$HOME_DIR/.codex/device"
+PID_FILE="$VOICE_DIR/voice.pid"
+PANEL_BIN="$HOME_DIR/codex-voice/bin/codex-voice-panel"
+VOICE_NOTIF_ID=9101
+
+if [ -f "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    sleep 0.3
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PID_FILE"
+fi
+
+termux-notification-remove -i "$VOICE_NOTIF_ID" >/dev/null 2>&1 || true
+"$PANEL_BIN" >/dev/null 2>&1 || true

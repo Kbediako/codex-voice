@@ -1,0 +1,4 @@
+*.log
+*.opus
+*.wav
+.DS_Store
