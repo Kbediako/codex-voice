@@ -462,11 +462,7 @@ while :; do
           termux-toast "Say your command..." >/dev/null 2>&1 || true
         fi
         termux-vibrate -d 80 >/dev/null 2>&1 || true
-        if [ "$SAY_LISTENING" = "1" ]; then
-          sleep 0.7
-        else
-          sleep 0.2
-        fi
+        sleep 0.2
         cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD" "$WHISPER_BS_CMD" "$WHISPER_BO_CMD" "$CMD_ENGINE")
         cmd=$(normalize_text "$cmd")
         if [ -n "$cmd" ] && ! is_garbage_transcript "$cmd"; then
