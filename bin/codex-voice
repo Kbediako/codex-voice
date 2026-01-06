@@ -87,7 +87,7 @@ resolve_model_override() {
 }
 
 select_whisper_model_wake() {
-  candidates="ggml-base.en.bin ggml-small.en.bin ggml-tiny.en.bin ggml-medium.en.bin ggml-large-v3.bin ggml-large.bin"
+  candidates="ggml-tiny.en.bin ggml-base.en.bin ggml-small.en.bin ggml-medium.en.bin ggml-large-v3.bin ggml-large.bin"
   for model in $candidates; do
     if [ -f "$WHISPER_MODEL_DIR/$model" ]; then
       printf '%s' "$WHISPER_MODEL_DIR/$model"
@@ -267,13 +267,11 @@ is_garbage_transcript() {
 }
 
 contains_wake() {
-  for w in $1; do
-    case "$w" in
-      cod|code|codes|codec|codecs|codex|codexx|codexs|codexes|codix|cods|kodex|kode|kodi|kody|cortex)
-        return 0
-        ;;
-    esac
-  done
+  case "$1" in
+    *cod*|*kode*|*kodi*|*codi*|*cortex*)
+      return 0
+      ;;
+  esac
   return 1
 }
 
