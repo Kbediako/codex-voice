@@ -3,7 +3,7 @@
 VOICE_DIR="$HOME/.codex/device"
 PID_FILE="$VOICE_DIR/voice.pid"
 
-if pgrep -f "/codex-voice" >/dev/null 2>&1; then
+if pgrep -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1; then
   termux-toast "Codex voice running" >/dev/null 2>&1 || true
   exit 0
 fi

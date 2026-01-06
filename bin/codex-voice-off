@@ -14,7 +14,7 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
-pkill -9 -f "/codex-voice" >/dev/null 2>&1 || true
+pkill -9 -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1 || true
 pkill -9 -f "termux-api SpeechToText" >/dev/null 2>&1 || true
 pkill -9 -f "termux-microphone-record" >/dev/null 2>&1 || true
 
