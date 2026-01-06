@@ -28,6 +28,8 @@ WHISPER_MODEL_WAKE=""
 WHISPER_MODEL_CMD=""
 WHISPER_MODEL_CMD_OVERRIDE="${CODEX_VOICE_MODEL_CMD:-}"
 WHISPER_MODEL_WAKE_OVERRIDE="${CODEX_VOICE_MODEL_WAKE:-}"
+WAKE_ENGINE="${CODEX_VOICE_WAKE_ENGINE:-stt}"
+CMD_ENGINE="${CODEX_VOICE_CMD_ENGINE:-whisper}"
 AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
@@ -214,11 +216,21 @@ listen_once() {
   min_bytes="$3"
   beam_size="$4"
   best_of="$5"
+  engine="$6"
   if [ -z "$record_secs" ]; then
     record_secs="$RECORD_SECS"
   fi
   if [ -z "$min_bytes" ]; then
     min_bytes="$MIN_OPUS_BYTES"
+  fi
+  if [ "$engine" = "stt" ]; then
+    out=$(termux-speech-to-text 2>>"$LOG_FILE")
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      log "speech-to-text exit $status"
+    fi
+    printf '%s' "$out" | awk 'NF{last=$0} END{print last}'
+    return
   fi
   if [ -x "$WHISPER_BIN" ] && [ -n "$model" ] && [ -f "$model" ]; then
     termux-microphone-record -q >/dev/null 2>&1 || true
@@ -345,6 +357,8 @@ if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL_CMD" ] && [ -f "$WHISPER_MODEL_
   wake_name=$(basename "$WHISPER_MODEL_WAKE")
   log "Using whisper model (command): $model_name"
   log "Using whisper model (wake): $wake_name"
+  log "Wake engine: $WAKE_ENGINE"
+  log "Command engine: $CMD_ENGINE"
   notify "Listening (offline: wake $wake_name, cmd $model_name) for '$WAKE_PHRASE'"
   log "Started (whisper offline)"
   speak "Codex voice is live offline."
@@ -366,7 +380,7 @@ while :; do
     last_heartbeat=$now
   fi
 
-  text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE" "$WHISPER_BS_WAKE" "$WHISPER_BO_WAKE")
+  text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE" "$WHISPER_BS_WAKE" "$WHISPER_BO_WAKE" "$WAKE_ENGINE")
   text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
   if [ -z "$text" ]; then
@@ -440,7 +454,7 @@ while :; do
         else
           sleep 0.2
         fi
-        cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD" "$WHISPER_BS_CMD" "$WHISPER_BO_CMD")
+        cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD" "$WHISPER_BS_CMD" "$WHISPER_BO_CMD" "$CMD_ENGINE")
         cmd=$(normalize_text "$cmd")
         if [ -n "$cmd" ] && ! is_garbage_transcript "$cmd"; then
           break
