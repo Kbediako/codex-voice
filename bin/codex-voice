@@ -28,9 +28,10 @@ WHISPER_MODEL_WAKE=""
 WHISPER_MODEL_CMD=""
 WHISPER_MODEL_CMD_OVERRIDE="${CODEX_VOICE_MODEL_CMD:-}"
 WHISPER_MODEL_WAKE_OVERRIDE="${CODEX_VOICE_MODEL_WAKE:-}"
-WAKE_ENGINE="${CODEX_VOICE_WAKE_ENGINE:-whisper}"
+WAKE_ENGINE="${CODEX_VOICE_WAKE_ENGINE:-stt}"
 CMD_ENGINE="${CODEX_VOICE_CMD_ENGINE:-whisper}"
-STT_TIMEOUT="${CODEX_VOICE_STT_TIMEOUT:-5}"
+STT_TIMEOUT="${CODEX_VOICE_STT_TIMEOUT:-3}"
+DEBUG_TOAST="${CODEX_VOICE_DEBUG_TOAST:-0}"
 AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
@@ -405,6 +406,10 @@ while :; do
   fi
 
   log "Heard: $norm"
+  if [ "$DEBUG_TOAST" = "1" ]; then
+    short_norm=$(printf '%.60s' "$norm")
+    termux-toast "Heard: $short_norm" >/dev/null 2>&1 || true
+  fi
 
   goto_handle=0
 
