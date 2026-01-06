@@ -19,6 +19,8 @@ WHISPER_BIN="$HOME/bin/whisper-cpp"
 WHISPER_MODEL_DIR="$VOICE_DIR/models"
 WHISPER_MODEL_WAKE=""
 WHISPER_MODEL_CMD=""
+WHISPER_MODEL_CMD_OVERRIDE="${CODEX_VOICE_MODEL_CMD:-}"
+WHISPER_MODEL_WAKE_OVERRIDE="${CODEX_VOICE_MODEL_WAKE:-}"
 AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
@@ -43,9 +45,7 @@ select_whisper_model() {
   mem_kb=$(get_mem_total_kb)
   candidates=""
 
-  if [ -n "$mem_kb" ] && [ "$mem_kb" -ge 8000000 ]; then
-    candidates="ggml-large-v3.bin ggml-large.bin ggml-medium.en.bin ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
-  elif [ -n "$mem_kb" ] && [ "$mem_kb" -ge 4500000 ]; then
+  if [ -n "$mem_kb" ] && [ "$mem_kb" -ge 4500000 ]; then
     candidates="ggml-medium.en.bin ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
   else
     candidates="ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
@@ -58,6 +58,23 @@ select_whisper_model() {
     fi
   done
 
+  printf '%s' ""
+}
+
+resolve_model_override() {
+  ov="$1"
+  if [ -z "$ov" ]; then
+    printf '%s' ""
+    return
+  fi
+  if [ -f "$ov" ]; then
+    printf '%s' "$ov"
+    return
+  fi
+  if [ -f "$WHISPER_MODEL_DIR/$ov" ]; then
+    printf '%s' "$WHISPER_MODEL_DIR/$ov"
+    return
+  fi
   printf '%s' ""
 }
 
@@ -277,6 +294,14 @@ say_response() {
 acquire_lock
 WHISPER_MODEL_CMD=$(select_whisper_model)
 WHISPER_MODEL_WAKE=$(select_whisper_model_wake)
+cmd_override=$(resolve_model_override "$WHISPER_MODEL_CMD_OVERRIDE")
+if [ -n "$cmd_override" ]; then
+  WHISPER_MODEL_CMD="$cmd_override"
+fi
+wake_override=$(resolve_model_override "$WHISPER_MODEL_WAKE_OVERRIDE")
+if [ -n "$wake_override" ]; then
+  WHISPER_MODEL_WAKE="$wake_override"
+fi
 if [ -z "$WHISPER_MODEL_WAKE" ]; then
   WHISPER_MODEL_WAKE="$WHISPER_MODEL_CMD"
 fi
