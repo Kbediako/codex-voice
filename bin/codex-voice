@@ -12,6 +12,10 @@ SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-1}"
 AUDIO_GAIN="${CODEX_VOICE_GAIN:-3.0}"
 WHISPER_THREADS="${CODEX_VOICE_THREADS:-6}"
 WHISPER_PROCS="${CODEX_VOICE_PROCS:-1}"
+WHISPER_BS_WAKE="${CODEX_VOICE_BS_WAKE:-1}"
+WHISPER_BO_WAKE="${CODEX_VOICE_BO_WAKE:-1}"
+WHISPER_BS_CMD="${CODEX_VOICE_BS_CMD:-2}"
+WHISPER_BO_CMD="${CODEX_VOICE_BO_CMD:-2}"
 LOG_FILE="$VOICE_DIR/voice_debug.log"
 WAKE_WINDOW_SECS=6
 wake_buffer=""
@@ -32,8 +36,8 @@ RECORD_SECS=4
 MIN_OPUS_BYTES=2000
 RECORD_SECS_WAKE=2
 RECORD_SECS_CMD=3
-MIN_OPUS_BYTES_WAKE=300
-MIN_OPUS_BYTES_CMD=1200
+MIN_OPUS_BYTES_WAKE=200
+MIN_OPUS_BYTES_CMD=1000
 MAX_COMMAND_RETRIES=1
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
@@ -208,6 +212,8 @@ listen_once() {
   model="$1"
   record_secs="$2"
   min_bytes="$3"
+  beam_size="$4"
+  best_of="$5"
   if [ -z "$record_secs" ]; then
     record_secs="$RECORD_SECS"
   fi
@@ -221,7 +227,7 @@ listen_once() {
     sleep "$record_secs"
     termux-microphone-record -q >/dev/null 2>&1 || true
     wait_for_recording_stop
-    sleep 0.6
+    sleep 0.2
     if [ ! -s "$AUDIO_OPUS" ]; then
       log "no audio captured"
       echo ""
@@ -239,7 +245,9 @@ listen_once() {
       echo ""
       return
     fi
-    "$WHISPER_BIN" -m "$model" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en -t "$WHISPER_THREADS" -p "$WHISPER_PROCS" >/dev/null 2>>"$LOG_FILE"
+    "$WHISPER_BIN" -m "$model" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en \
+      -t "$WHISPER_THREADS" -p "$WHISPER_PROCS" -bs "$beam_size" -bo "$best_of" \
+      >/dev/null 2>>"$LOG_FILE"
     status=$?
     if [ "$status" -ne 0 ]; then
       log "whisper exit $status"
@@ -358,7 +366,7 @@ while :; do
     last_heartbeat=$now
   fi
 
-  text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE")
+  text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE" "$WHISPER_BS_WAKE" "$WHISPER_BO_WAKE")
   text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
   if [ -z "$text" ]; then
@@ -432,7 +440,7 @@ while :; do
         else
           sleep 0.2
         fi
-        cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
+        cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD" "$WHISPER_BS_CMD" "$WHISPER_BO_CMD")
         cmd=$(normalize_text "$cmd")
         if [ -n "$cmd" ] && ! is_garbage_transcript "$cmd"; then
           break
