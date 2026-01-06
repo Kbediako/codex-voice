@@ -32,7 +32,7 @@ log() {
 }
 
 notify() {
-  termux-notification -i "$NOTIF_ID" --ongoing \
+  termux-notification -i "$NOTIF_ID" --ongoing --alert-once \
     -t "$NOTIF_TITLE" -c "$1" >/dev/null 2>&1 || true
 }
 
