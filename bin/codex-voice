@@ -8,7 +8,7 @@ WAKE_PHRASE="yo codex"
 NOTIF_ID=9101
 NOTIF_TITLE="Codex Voice"
 TTS_STREAM="MUSIC"
-SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-0}"
+SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-1}"
 LOG_FILE="$VOICE_DIR/voice_debug.log"
 WAKE_WINDOW_SECS=6
 wake_buffer=""
@@ -27,10 +27,10 @@ AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
 RECORD_SECS=4
 MIN_OPUS_BYTES=2000
-RECORD_SECS_WAKE=5
-RECORD_SECS_CMD=6
+RECORD_SECS_WAKE=4
+RECORD_SECS_CMD=5
 MIN_OPUS_BYTES_WAKE=600
-MIN_OPUS_BYTES_CMD=2200
+MIN_OPUS_BYTES_CMD=1600
 MAX_COMMAND_RETRIES=1
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
@@ -51,9 +51,9 @@ select_whisper_model() {
   candidates=""
 
   if [ -n "$mem_kb" ] && [ "$mem_kb" -ge 4500000 ]; then
-    candidates="ggml-medium.en.bin ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
+    candidates="ggml-base.en.bin ggml-small.en.bin ggml-medium.en.bin ggml-tiny.en.bin"
   else
-    candidates="ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
+    candidates="ggml-base.en.bin ggml-tiny.en.bin"
   fi
 
   for model in $candidates; do
@@ -254,7 +254,7 @@ normalize_text() {
 
 is_garbage_transcript() {
   case "$1" in
-    ""|"blank audio"|"dramatic music"|"music"|"music playing"|"background music"|"footsteps"|"water splashing"|"silence"|"background noise"|"noise")
+    ""|"blank audio"|"dramatic music"|"music"|"music playing"|"background music"|"footsteps"|"water splashing"|"silence"|"background noise"|"noise"|"listening"|"ready")
       return 0
       ;;
     *)
@@ -405,12 +405,17 @@ while :; do
       attempt=0
       while [ $attempt -le "$MAX_COMMAND_RETRIES" ]; do
         notify "Listening..."
-        termux-toast "Say your command..." >/dev/null 2>&1 || true
         if [ "$SAY_LISTENING" = "1" ]; then
           speak "Listening."
+        else
+          termux-toast "Say your command..." >/dev/null 2>&1 || true
         fi
         termux-vibrate -d 80 >/dev/null 2>&1 || true
-        sleep 0.3
+        if [ "$SAY_LISTENING" = "1" ]; then
+          sleep 0.7
+        else
+          sleep 0.2
+        fi
         cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
         cmd=$(normalize_text "$cmd")
         if [ -n "$cmd" ] && ! is_garbage_transcript "$cmd"; then
