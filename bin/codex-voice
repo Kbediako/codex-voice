@@ -17,7 +17,8 @@ HEARTBEAT_SECS=30
 last_heartbeat=0
 WHISPER_BIN="$HOME/bin/whisper-cpp"
 WHISPER_MODEL_DIR="$VOICE_DIR/models"
-WHISPER_MODEL=""
+WHISPER_MODEL_WAKE=""
+WHISPER_MODEL_CMD=""
 AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
@@ -57,6 +58,17 @@ select_whisper_model() {
     fi
   done
 
+  printf '%s' ""
+}
+
+select_whisper_model_wake() {
+  candidates="ggml-tiny.en.bin ggml-base.en.bin ggml-small.en.bin ggml-medium.en.bin ggml-large-v3.bin ggml-large.bin"
+  for model in $candidates; do
+    if [ -f "$WHISPER_MODEL_DIR/$model" ]; then
+      printf '%s' "$WHISPER_MODEL_DIR/$model"
+      return
+    fi
+  done
   printf '%s' ""
 }
 
@@ -157,7 +169,8 @@ wait_for_recording_stop() {
 }
 
 listen_once() {
-  if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ] && [ -f "$WHISPER_MODEL" ]; then
+  model="$1"
+  if [ -x "$WHISPER_BIN" ] && [ -n "$model" ] && [ -f "$model" ]; then
     termux-microphone-record -q >/dev/null 2>&1 || true
     rm -f "$AUDIO_OPUS" "$AUDIO_WAV" "${TRANSCRIPT_BASE}.txt"
     termux-microphone-record -f "$AUDIO_OPUS" -l "$RECORD_SECS" -e opus >/dev/null 2>&1 || true
@@ -182,7 +195,7 @@ listen_once() {
       echo ""
       return
     fi
-    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en >/dev/null 2>>"$LOG_FILE"
+    "$WHISPER_BIN" -m "$model" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en >/dev/null 2>>"$LOG_FILE"
     status=$?
     if [ "$status" -ne 0 ]; then
       log "whisper exit $status"
@@ -262,14 +275,20 @@ say_response() {
 }
 
 acquire_lock
-WHISPER_MODEL=$(select_whisper_model)
+WHISPER_MODEL_CMD=$(select_whisper_model)
+WHISPER_MODEL_WAKE=$(select_whisper_model_wake)
+if [ -z "$WHISPER_MODEL_WAKE" ]; then
+  WHISPER_MODEL_WAKE="$WHISPER_MODEL_CMD"
+fi
 session_id=$(init_session)
 
 termux-wake-lock >/dev/null 2>&1 || true
-if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ] && [ -f "$WHISPER_MODEL" ]; then
-  model_name=$(basename "$WHISPER_MODEL")
-  log "Using whisper model: $model_name"
-  notify "Listening (offline: $model_name) for '$WAKE_PHRASE'"
+if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL_CMD" ] && [ -f "$WHISPER_MODEL_CMD" ]; then
+  model_name=$(basename "$WHISPER_MODEL_CMD")
+  wake_name=$(basename "$WHISPER_MODEL_WAKE")
+  log "Using whisper model (command): $model_name"
+  log "Using whisper model (wake): $wake_name"
+  notify "Listening (offline: wake $wake_name, cmd $model_name) for '$WAKE_PHRASE'"
   log "Started (whisper offline)"
   speak "Codex voice is live offline."
 else
@@ -290,7 +309,13 @@ while :; do
     last_heartbeat=$now
   fi
 
-  text=$(listen_once)
+  if [ "$armed" -eq 1 ]; then
+    notify "Listening..."
+    termux-vibrate -d 80 >/dev/null 2>&1 || true
+    text=$(listen_once "$WHISPER_MODEL_CMD")
+  else
+    text=$(listen_once "$WHISPER_MODEL_WAKE")
+  fi
   text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
   if [ -z "$text" ]; then
