@@ -16,19 +16,48 @@ wake_ts=0
 HEARTBEAT_SECS=30
 last_heartbeat=0
 WHISPER_BIN="$HOME/bin/whisper-cpp"
-WHISPER_MODEL="$VOICE_DIR/models/ggml-tiny.en.bin"
+WHISPER_MODEL_DIR="$VOICE_DIR/models"
+WHISPER_MODEL=""
 AUDIO_DIR="$VOICE_DIR/audio"
 AUDIO_OPUS="$AUDIO_DIR/input.opus"
 AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
 RECORD_SECS=4
+MIN_OPUS_BYTES=2000
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
+has_lock=0
 
 mkdir -p "$VOICE_DIR" "$AUDIO_DIR"
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+get_mem_total_kb() {
+  awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null
+}
+
+select_whisper_model() {
+  mem_kb=$(get_mem_total_kb)
+  candidates=""
+
+  if [ -n "$mem_kb" ] && [ "$mem_kb" -ge 8000000 ]; then
+    candidates="ggml-large-v3.bin ggml-large.bin ggml-medium.en.bin ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
+  elif [ -n "$mem_kb" ] && [ "$mem_kb" -ge 4500000 ]; then
+    candidates="ggml-medium.en.bin ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
+  else
+    candidates="ggml-small.en.bin ggml-base.en.bin ggml-tiny.en.bin"
+  fi
+
+  for model in $candidates; do
+    if [ -f "$WHISPER_MODEL_DIR/$model" ]; then
+      printf '%s' "$WHISPER_MODEL_DIR/$model"
+      return
+    fi
+  done
+
+  printf '%s' ""
 }
 
 notify() {
@@ -37,11 +66,13 @@ notify() {
 }
 
 cleanup() {
-  notify "Stopped"
-  termux-notification-remove -i "$NOTIF_ID" >/dev/null 2>&1 || true
   termux-wake-unlock >/dev/null 2>&1 || true
-  rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
-  log "Stopped"
+  if [ "$has_lock" -eq 1 ]; then
+    notify "Stopped"
+    termux-notification-remove -i "$NOTIF_ID" >/dev/null 2>&1 || true
+    rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
+    log "Stopped"
+  fi
 }
 
 trap cleanup INT TERM EXIT
@@ -49,7 +80,19 @@ trap cleanup INT TERM EXIT
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo "$$" > "$LOCK_PID_FILE"
+    has_lock=1
     return 0
+  fi
+
+  if [ ! -f "$LOCK_PID_FILE" ]; then
+    i=0
+    while [ $i -lt 5 ]; do
+      if [ -f "$LOCK_PID_FILE" ]; then
+        break
+      fi
+      sleep 0.1
+      i=$((i+1))
+    done
   fi
 
   if [ -f "$LOCK_PID_FILE" ]; then
@@ -63,6 +106,7 @@ acquire_lock() {
   rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo "$$" > "$LOCK_PID_FILE"
+    has_lock=1
   fi
 }
 
@@ -99,14 +143,36 @@ init_session() {
   fi
 }
 
+wait_for_recording_stop() {
+  i=0
+  while [ $i -lt 10 ]; do
+    rec=$(termux-microphone-record -i 2>/dev/null | sed -n 's/.*"isRecording"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p')
+    if [ "$rec" = "false" ] || [ -z "$rec" ]; then
+      return 0
+    fi
+    i=$((i+1))
+    sleep 0.1
+  done
+  return 0
+}
+
 listen_once() {
-  if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
+  if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ] && [ -f "$WHISPER_MODEL" ]; then
     termux-microphone-record -q >/dev/null 2>&1 || true
     rm -f "$AUDIO_OPUS" "$AUDIO_WAV" "${TRANSCRIPT_BASE}.txt"
     termux-microphone-record -f "$AUDIO_OPUS" -l "$RECORD_SECS" -e opus >/dev/null 2>&1 || true
-    sleep $((RECORD_SECS + 1))
+    sleep "$RECORD_SECS"
+    termux-microphone-record -q >/dev/null 2>&1 || true
+    wait_for_recording_stop
+    sleep 0.6
     if [ ! -s "$AUDIO_OPUS" ]; then
       log "no audio captured"
+      echo ""
+      return
+    fi
+    opus_bytes=$(wc -c < "$AUDIO_OPUS" | tr -d ' ')
+    if [ "$opus_bytes" -lt "$MIN_OPUS_BYTES" ]; then
+      log "audio too small (${opus_bytes} bytes)"
       echo ""
       return
     fi
@@ -116,7 +182,7 @@ listen_once() {
       echo ""
       return
     fi
-    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en --vad -vt 0.6 -vsd 200 -vspd 400 >/dev/null 2>>"$LOG_FILE"
+    "$WHISPER_BIN" -m "$WHISPER_MODEL" -f "$AUDIO_WAV" -otxt -of "$TRANSCRIPT_BASE" -nt -np -l en >/dev/null 2>>"$LOG_FILE"
     status=$?
     if [ "$status" -ne 0 ]; then
       log "whisper exit $status"
@@ -196,11 +262,14 @@ say_response() {
 }
 
 acquire_lock
+WHISPER_MODEL=$(select_whisper_model)
 session_id=$(init_session)
 
 termux-wake-lock >/dev/null 2>&1 || true
-if [ -x "$WHISPER_BIN" ] && [ -f "$WHISPER_MODEL" ]; then
-  notify "Listening (offline) for '$WAKE_PHRASE'"
+if [ -x "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ] && [ -f "$WHISPER_MODEL" ]; then
+  model_name=$(basename "$WHISPER_MODEL")
+  log "Using whisper model: $model_name"
+  notify "Listening (offline: $model_name) for '$WAKE_PHRASE'"
   log "Started (whisper offline)"
   speak "Codex voice is live offline."
 else

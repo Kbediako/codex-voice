@@ -12,6 +12,15 @@ termux-notification-remove -i "$NOTIF_VOICE_ID" >/dev/null 2>&1 || true
 termux-notification-remove -i "$NOTIF_CTRL_ID" >/dev/null 2>&1 || true
 
 if pgrep -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1; then
+  # If a stop just ran, give it a moment to exit to avoid a false "already running".
+  i=0
+  while pgrep -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1 && [ $i -lt 10 ]; do
+    sleep 0.2
+    i=$((i+1))
+  done
+fi
+
+if pgrep -f "/codex-voice([[:space:]]|$)" >/dev/null 2>&1; then
   termux-toast "Codex voice already running" >/dev/null 2>&1 || true
   exit 0
 fi
