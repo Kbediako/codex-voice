@@ -9,6 +9,7 @@ NOTIF_ID=9101
 NOTIF_TITLE="Codex Voice"
 TTS_STREAM="MUSIC"
 SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-1}"
+AUDIO_GAIN="${CODEX_VOICE_GAIN:-2.0}"
 LOG_FILE="$VOICE_DIR/voice_debug.log"
 WAKE_WINDOW_SECS=6
 wake_buffer=""
@@ -27,9 +28,9 @@ AUDIO_WAV="$AUDIO_DIR/input.wav"
 TRANSCRIPT_BASE="$AUDIO_DIR/transcript"
 RECORD_SECS=4
 MIN_OPUS_BYTES=2000
-RECORD_SECS_WAKE=4
+RECORD_SECS_WAKE=5
 RECORD_SECS_CMD=5
-MIN_OPUS_BYTES_WAKE=600
+MIN_OPUS_BYTES_WAKE=400
 MIN_OPUS_BYTES_CMD=1600
 MAX_COMMAND_RETRIES=1
 LOCK_DIR="$VOICE_DIR/voice.lock"
@@ -219,7 +220,7 @@ listen_once() {
       echo ""
       return
     fi
-    ffmpeg -loglevel error -y -i "$AUDIO_OPUS" -ar 16000 -ac 1 -f wav "$AUDIO_WAV" >/dev/null 2>>"$LOG_FILE"
+    ffmpeg -loglevel error -y -i "$AUDIO_OPUS" -ar 16000 -ac 1 -af "volume=$AUDIO_GAIN" -f wav "$AUDIO_WAV" >/dev/null 2>>"$LOG_FILE"
     if [ ! -s "$AUDIO_WAV" ]; then
       log "ffmpeg failed"
       echo ""
@@ -264,15 +265,19 @@ is_garbage_transcript() {
 }
 
 contains_wake() {
-  case " $1 " in
-    *" codex "*|*" codec "*|*" code x "*|*" codexx "*) return 0 ;;
-  esac
+  for w in $1; do
+    case "$w" in
+      cod|code|codes|codec|codecs|codex|codexx|codexs|codexes|codix|cods|kodex|kode|kodi|kody|cortex)
+        return 0
+        ;;
+    esac
+  done
   return 1
 }
 
 strip_wake() {
   printf '%s' "$1" \
-    | sed -E 's/.*(yo|hey|hi|ok|okay) codex ?//; s/.*(yo|hey|hi|ok|okay) codec ?//; s/.*(yo|hey|hi|ok|okay) code x ?//; s/.*(yo|hey|hi|ok|okay) codexx ?//; s/.*codex ?//; s/.*codec ?//; s/.*code x ?//; s/.*codexx ?//'
+    | sed -E 's/.*(yo|hey|hi|ok|okay) (codex|codec|code x|codexx|codexs|codexes|codix|kodex|kode|kodi|kody|cortex) ?//; s/.*(codex|codec|code x|codexx|codexs|codexes|codix|kodex|kode|kodi|kody|cortex|cod|code|codes|codecs|cods) ?//'
 }
 
 speak() {
