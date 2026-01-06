@@ -11,8 +11,6 @@ TTS_STREAM="MUSIC"
 SAY_LISTENING="${CODEX_VOICE_SAY_LISTENING:-0}"
 LOG_FILE="$VOICE_DIR/voice_debug.log"
 WAKE_WINDOW_SECS=6
-armed=0
-armed_at=0
 wake_buffer=""
 wake_ts=0
 HEARTBEAT_SECS=30
@@ -33,7 +31,7 @@ RECORD_SECS_WAKE=3
 RECORD_SECS_CMD=6
 MIN_OPUS_BYTES_WAKE=1200
 MIN_OPUS_BYTES_CMD=2200
-ARM_TIMEOUT_SECS=12
+MAX_COMMAND_RETRIES=1
 LOCK_DIR="$VOICE_DIR/voice.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
 has_lock=0
@@ -358,19 +356,7 @@ while :; do
     last_heartbeat=$now
   fi
 
-  if [ "$armed" -eq 1 ] && [ "$armed_at" -gt 0 ] && [ $((now - armed_at)) -gt "$ARM_TIMEOUT_SECS" ]; then
-    armed=0
-    armed_at=0
-    notify "Listening for '$WAKE_PHRASE'"
-  fi
-
-  if [ "$armed" -eq 1 ]; then
-    notify "Listening..."
-    termux-vibrate -d 80 >/dev/null 2>&1 || true
-    text=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
-  else
-    text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE")
-  fi
+  text=$(listen_once "$WHISPER_MODEL_WAKE" "$RECORD_SECS_WAKE" "$MIN_OPUS_BYTES_WAKE")
   text=$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
   if [ -z "$text" ]; then
@@ -385,22 +371,7 @@ while :; do
 
   log "Heard: $norm"
 
-  if [ "$armed" -eq 1 ]; then
-    if [ -n "$norm" ]; then
-      cmd="$norm"
-      armed=0
-      armed_at=0
-      wake_buffer=""
-      wake_ts=0
-      notify "Thinking..."
-      log "Command (armed): $cmd"
-      goto_handle=1
-    else
-      continue
-    fi
-  else
-    goto_handle=0
-  fi
+  goto_handle=0
 
   case "$norm" in
     "stop"|"stop listening"|"quit"|"exit")
@@ -444,23 +415,27 @@ while :; do
     wake_ts=0
 
     if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
-      notify "Listening..."
-      termux-toast "Listening..." >/dev/null 2>&1 || true
-      if [ "$SAY_LISTENING" = "1" ]; then
-        speak "Listening."
-      fi
-      termux-vibrate -d 80 >/dev/null 2>&1 || true
-      sleep 0.3
-      cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
-      cmd=$(normalize_text "$cmd")
+      attempt=0
+      while [ $attempt -le "$MAX_COMMAND_RETRIES" ]; do
+        notify "Listening..."
+        termux-toast "Say your command..." >/dev/null 2>&1 || true
+        if [ "$SAY_LISTENING" = "1" ]; then
+          speak "Listening."
+        fi
+        termux-vibrate -d 80 >/dev/null 2>&1 || true
+        sleep 0.3
+        cmd=$(listen_once "$WHISPER_MODEL_CMD" "$RECORD_SECS_CMD" "$MIN_OPUS_BYTES_CMD")
+        cmd=$(normalize_text "$cmd")
+        if [ -n "$cmd" ] && ! is_garbage_transcript "$cmd"; then
+          break
+        fi
+        attempt=$((attempt + 1))
+        speak "I didn't catch that. Say it again."
+      done
     fi
 
     if [ -z "$cmd" ] || is_garbage_transcript "$cmd"; then
-      armed=1
-      armed_at=$now
-      notify "Say your command..."
-      termux-toast "Say your command..." >/dev/null 2>&1 || true
-      speak "I didn't catch that. Say it again."
+      notify "Listening for '$WAKE_PHRASE'"
       continue
     fi
 
